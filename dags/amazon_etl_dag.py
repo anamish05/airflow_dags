@@ -61,10 +61,10 @@ def amazon_books_etl():
                 break
 
             soup = BeautifulSoup(response.text, "html.parser")
+            book_containers = soup.find_all("div", {"data-component-type": "s-impression-counter"})
             print(f"DEBUG: Found {len(book_containers)} book containers on page {page}")
             if len(book_containers) == 0:
                 print(response.text[:500]) # Print the first 500 characters of the HTML to see if it's a Captcha page
-            book_containers = soup.find_all("div", {"data-component-type": "s-impression-counter"})
 
             for book in book_containers:
                 title_tag = book.select_one("h2 span")
