@@ -10,7 +10,8 @@ from bs4 import BeautifulSoup
 default_args = {
     "owner": "Data Engineering Team",
     "retries": 3,
-    "retry_delay": timedelta(minutes=2),
+    "retry_delay": timedelta(minutes=10),
+    'retry_exponential_backoff': True,    # Wait longer each time
 }
 
 @dag(
@@ -34,7 +35,12 @@ def amazon_books_etl():
             "Sec-Ch-Ua": "Not_A Brand",
             "Sec-Ch-Ua-Mobile": "?0",
             "Sec-Ch-Ua-Platform": "macOS",
-            'User-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36'
+            'User-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36',
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1"
         }
 
         base_url = "https://www.amazon.com/s?k=data+engineering+books"
@@ -55,6 +61,9 @@ def amazon_books_etl():
                 break
 
             soup = BeautifulSoup(response.text, "html.parser")
+            print(f"DEBUG: Found {len(book_containers)} book containers on page {page}")
+            if len(book_containers) == 0:
+                print(response.text[:500]) # Print the first 500 characters of the HTML to see if it's a Captcha page
             book_containers = soup.find_all("div", {"data-component-type": "s-impression-counter"})
 
             for book in book_containers:
@@ -77,8 +86,12 @@ def amazon_books_etl():
                 break
 
             page += 1
-            time.sleep(random.uniform(1.5, 3.0))
+            time.sleep(random.uniform(3.0, 7.0))
 
+        if not books:
+            # This prevents the empty CSV from being created and crashing the next task
+            raise ValueError("Scraper found 0 books. Amazon might be blocking the request or the selectors changed.")
+        
         # Convert to DataFrame
         df = pd.DataFrame(books)
         df.drop_duplicates(subset="Title", inplace=True)
