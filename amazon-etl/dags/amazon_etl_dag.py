@@ -10,14 +10,14 @@ from bs4 import BeautifulSoup
 default_args = {
     "owner": "Data Engineering Team",
     "retries": 3,
-    "retry_delay": timedelta(minutes=2),
+    "retry_delay": timedelta(minutes=4),
 }
 
 @dag(
     dag_id="amazon_books_etl_pipeline",
-    description="Automated ETL pipeline to fetch and load Amazon Data Engineering book data into MySQL",
+    description="Automated ETL pipeline to fetch and clean Amazon Data Engineering book data into MySQL",
     schedule="@daily",
-    start_date=datetime(2026, 3, 13),
+    start_date=datetime(2025, 11, 13),
     catchup=False,
     default_args=default_args,
     tags=["amazon", "etl", "airflow"],
@@ -36,6 +36,7 @@ def amazon_books_etl():
             "Sec-Ch-Ua-Platform": "macOS",
             'User-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36'
         }
+
 
         base_url = "https://www.amazon.com/s?k=data+engineering+books"
         books, seen_titles = [], set()
@@ -83,6 +84,7 @@ def amazon_books_etl():
         df = pd.DataFrame(books)
         df.drop_duplicates(subset="Title", inplace=True)
 
+    
         # Create directory for raw data.
             # Note: This works here because everything runs in one container.
             # In real deployments, you'd use shared storage (e.g., S3/GCS) instead.
@@ -105,6 +107,7 @@ def amazon_books_etl():
         # Clean up non-breaking spaces and format neatly
         formatted_summary = json.dumps(summary, indent=2, ensure_ascii=False).replace('\xa0', ' ')
 
+
         if ti:
             ti.xcom_push(key='df_summary', value= formatted_summary)
             print("[XCOM] Pushed JSON summary to XCom.")
@@ -114,14 +117,14 @@ def amazon_books_etl():
         print(df.head(5).to_string(index=False))
 
         return raw_path
-    
+
     @task
     def transform_amazon_books(raw_file: str):
         """
         Standardizes the extracted Amazon book dataset for analysis.
-        - Converts price strings (e.g., 'EUR 45.99') into numeric values
+        - Converts price strings (e.g., '$45.99') into numeric values
         - Extracts numeric ratings (e.g., '4.2' from '4.2 out of 5 stars')
-        - Renames 'Price' to 'Price(eur)'
+        - Renames 'Price' to 'Price($)'
         - Handles missing or unexpected field formats safely
         - Performs light validation after numeric conversion
         """
@@ -133,17 +136,17 @@ def amazon_books_etl():
 
         # --- Price cleaning (defensive) ---
         if "Price" in df.columns:
-            df["Price(eur)"] = (
+            df["Price($)"] = (
                 df["Price"]
                 .astype(str)                                   # prevents .str on NaN
-                .str.replace("EUR", "", regex=False)
+                .str.replace("$", "", regex=False)
                 .str.replace(",", "", regex=False)
                 .str.extract(r"(\d+\.?\d*)")[0]                # safely extract numbers
             )
-            df["Price(eur)"] = pd.to_numeric(df["Price(eur)"], errors="coerce")
+            df["Price($)"] = pd.to_numeric(df["Price($)"], errors="coerce")
         else:
             print("[TRANSFORM] Missing 'Price' column — filling with None.")
-            df["Price(eur)"] = None
+            df["Price($)"] = None
 
         # --- Rating cleaning (defensive) ---
         if "Rating" in df.columns:
@@ -158,7 +161,7 @@ def amazon_books_etl():
             df["Rating"] = None
 
         # --- Validation: drop rows where BOTH fields failed (optional) ---
-        df.dropna(subset=["Price(eur)", "Rating"], how="all", inplace=True)
+        df.dropna(subset=["Price($)", "Rating"], how="all", inplace=True)
 
         # --- Drop original Price column (if present) ---
         if "Price" in df.columns:
@@ -173,6 +176,7 @@ def amazon_books_etl():
         print(f"[TRANSFORM] Sample cleaned data:\n{df.head(5).to_string(index=False)}")
 
         return transformed_path
+
 
     @task
     def load_to_mysql(transformed_file: str):
@@ -189,7 +193,7 @@ def amazon_books_etl():
         # Airflow provides a built-in Connection system and can also integrate with
         # secret backends (AWS Secrets Manager, Vault, etc.).
         #
-        # Example:
+        # Example (production-ready project):
         #     hook = MySqlHook(mysql_conn_id="my_mysql_conn")
         #     conn = hook.get_conn()
         #
@@ -216,17 +220,17 @@ def amazon_books_etl():
             CREATE TABLE IF NOT EXISTS {table_name} (
                 Title VARCHAR(512),
                 Author VARCHAR(255),
-                `Price(eur)` DECIMAL(10,2),
+                `Price($)` DECIMAL(10,2),
                 Rating DECIMAL(4,2)
             );
         """)
-
+        
         # Truncate table for idempotency
         cursor.execute(f"TRUNCATE TABLE {table_name};")
 
         # Insert rows
         insert_query = f"""
-            INSERT INTO {table_name} (Title, Author, `Price(eur)`, Rating)
+            INSERT INTO {table_name} (Title, Author, `Price($)`, Rating)
             VALUES (%s, %s, %s, %s)
         """
 
@@ -234,7 +238,7 @@ def amazon_books_etl():
             try:
                 cursor.execute(
                     insert_query,
-                    (row["Title"], row["Author"], row["Price(eur)"], row["Rating"])
+                    (row["Title"], row["Author"], row["Price($)"], row["Rating"])
                 )
             except Exception as e:
                 # For demo purposes we simply skip bad rows.
@@ -246,7 +250,8 @@ def amazon_books_etl():
 
         print(f"[LOAD] Table '{table_name}' refreshed with {len(df)} rows.")
 
-    raw_file=get_amazon_data_books()
+    # Task dependencies 
+    raw_file = get_amazon_data_books()
     transformed_file = transform_amazon_books(raw_file)
     load_to_mysql(transformed_file)
 
